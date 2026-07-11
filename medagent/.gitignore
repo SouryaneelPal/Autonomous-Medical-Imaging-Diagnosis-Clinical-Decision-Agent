@@ -1,0 +1,99 @@
+# =========================
+# Python & Environment
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+env/
+.env/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environment Variables (CRITICAL: Do not commit secrets!)
+.env
+.env.local
+
+# =========================
+# Project-Specific Data & Models
+# =========================
+# Ignore data contents but keep the directories (use .gitkeep if needed)
+data/dicom_cache/*
+!data/dicom_cache/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
+data/splits/*
+!data/splits/.gitkeep
+
+# Ignore heavy model checkpoints and quantized models
+models/checkpoints/*
+!models/checkpoints/.gitkeep
+models/quantized/*
+!models/quantized/.gitkeep
+
+# Ignore Vector Database/FAISS indexes
+vectorstore/faiss_index/*
+!vectorstore/faiss_index/.gitkeep
+
+# Ignore MLflow tracking data
+mlruns/
+
+# =========================
+# Jupyter Notebooks
+# =========================
+.ipynb_checkpoints
+
+# =========================
+# Testing & Coverage
+# =========================
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# =========================
+# IDEs & OS Specific
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
