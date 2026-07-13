@@ -157,11 +157,10 @@ def _build_chat_model() -> BaseChatModel:
     from langchain_ollama import ChatOllama
 
     return ChatOllama(
-        model=getattr(settings, "ollama_model", "llama3.1:8b"),
+        model="llama3.1",
         temperature=0.1,
         num_predict=settings.llm_max_new_tokens,
     )
-
 
 @lru_cache(maxsize=1)
 def _get_diagnosis_chain() -> Runnable:
@@ -237,3 +236,41 @@ def diagnosis_agent_node(state: AgentState) -> dict:
             "diagnosis_findings": fallback.model_dump(),
             "errors": [f"diagnosis_agent_node: {exc}"],
         }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Standalone Execution / Testing Block
+# ─────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import json
+    
+    # 1. Configure basic logging to see terminal output
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    
+    print("\n[INIT] Starting Diagnosis Agent Test Run...")
+    
+    # 2. Create a mock AgentState representing a dummy case
+    mock_state: AgentState = {
+        "case_id": "TEST-12345",
+        "classification": "Pneumonia - High Confidence (0.94)",
+        "detections": "Bounding Box: [120, 150, 300, 450] - Opacity in Right Lower Lobe",
+        "patient_metadata": "65-year-old male, presenting with persistent cough and fever.",
+        "diagnosis_findings": {},
+        "errors": []
+    }
+    
+    print("\n[INPUT] Feeding mock patient data into the agent:")
+    print(json.dumps({
+        "classification": mock_state["classification"],
+        "detections": mock_state["detections"],
+        "patient_metadata": mock_state["patient_metadata"]
+    }, indent=2))
+    
+    print("\n[PROCESSING] Generating structured diagnosis via LLM (this may take a few seconds)...")
+    
+    # 3. Run the node
+    result_state = diagnosis_agent_node(mock_state)
+    
+    # 4. Print the result
+    print("\n[OUTPUT] Final JSON from Diagnosis Agent:")
+    print(json.dumps(result_state, indent=2))
