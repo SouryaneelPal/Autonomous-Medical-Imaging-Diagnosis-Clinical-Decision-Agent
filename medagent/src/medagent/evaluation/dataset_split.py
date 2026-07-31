@@ -101,6 +101,29 @@ def _parse_dicom_age(raw: str | None) -> int:
     return value if raw[-1].upper() == "Y" else 0
 
 
+SYNTHETIC_MARKER_FILE = "SYNTHETIC_DATA_README.txt"
+
+
+def is_synthetic_dataset(rsna_dir: str | Path) -> bool:
+    """
+    True when `rsna_dir` holds generated data rather than the real RSNA
+    challenge dataset, detected by the marker file
+    data/synthetic_rsna_generator.py writes alongside its output.
+
+    Deliberately fails toward "synthetic": an unreadable or unexpected
+    directory returns True. Everything downstream uses this to decide
+    whether to stamp the Model Card with a NOT-CLINICAL-EVIDENCE
+    watermark, and the two ways of being wrong are not symmetric --
+    warning that real results are synthetic is a correctable annoyance,
+    while presenting synthetic results as real clinical evidence is the
+    single worst failure this document can have.
+    """
+    try:
+        return (Path(rsna_dir) / SYNTHETIC_MARKER_FILE).exists() or not Path(rsna_dir).is_dir()
+    except OSError:
+        return True
+
+
 def build_case_index(rsna_dir: str | Path) -> list[Case]:
     """
     Reads an RSNA-shaped directory (stage_2_train_labels.csv,
@@ -345,6 +368,22 @@ def create_locked_split(
     if not cases:
         raise ValueError("create_locked_split() called with an empty case list")
 
+    # The protocol is a 70/15/15 train/val/test split. Validating the
+    # fractions here rather than trusting the defaults means a caller
+    # who passes an inconsistent pair (say test_size=0.2, val_size=0.3)
+    # is refused up front instead of silently locking a split that no
+    # longer matches the documented protocol -- and a locked split is
+    # exactly the thing that must not be quietly wrong, since every
+    # metric afterwards is reported against it.
+    if not 0.0 < test_size < 1.0 or not 0.0 < val_size < 1.0:
+        raise ValueError(f"test_size and val_size must each be in (0, 1); got {test_size}, {val_size}")
+    train_size = 1.0 - test_size - val_size
+    if train_size <= 0.0:
+        raise ValueError(
+            f"test_size + val_size must leave a non-empty training set; got "
+            f"{test_size} + {val_size} = {test_size + val_size}"
+        )
+
     duplicate_ids = [pid for pid, count in Counter(c["patient_id"] for c in cases).items() if count > 1]
     if duplicate_ids:
         raise ValueError(
@@ -354,7 +393,16 @@ def create_locked_split(
         )
 
     by_id = {c["patient_id"]: c for c in cases}
-    all_ids = list(by_id.keys())
+    # Sorted, not dict-insertion order. train_test_split() shuffles
+    # deterministically for a given seed, but only relative to the order
+    # it is handed -- and insertion order here follows whatever order
+    # build_case_index() happened to read the CSV rows in. Sorting by
+    # patientId first means the same dataset yields the same split on
+    # any machine, after any re-download, regardless of row ordering:
+    # the seed alone does not guarantee that, and a split that quietly
+    # differs between environments makes every reported metric
+    # unreproducible.
+    all_ids = sorted(by_id.keys())
 
     train_val_ids, test_ids = _stratified_split(all_ids, by_id, test_size, seed)
     relative_val_size = val_size / (1.0 - test_size)

@@ -71,6 +71,7 @@ def generate_model_card(
     temperature: float,
     target_recall: float | None = None,
     output_path: str | Path = DEFAULT_MODEL_CARD_PATH,
+    synthetic: bool = True,
 ) -> str:
     """
     Renders a Model Card Markdown document from already-computed Phase 1
@@ -80,22 +81,44 @@ def generate_model_card(
     output), and `temperature` (evaluation/calibration.py's
     TemperatureScaler.temperature) -- and writes it to `output_path`.
     Returns the rendered text.
+
+    `synthetic` controls the NOT-CLINICAL-EVIDENCE watermark and
+    **defaults to True on purpose**. A caller evaluating real data must
+    say so explicitly, ideally by passing
+    dataset_split.is_synthetic_dataset(rsna_dir). The asymmetry is
+    deliberate: a real Model Card wrongly carrying a synthetic warning
+    is a correctable annoyance, whereas a synthetic one silently
+    presenting itself as clinical evidence is the worst failure this
+    document can have -- so the dangerous direction is the one that
+    requires an explicit act.
     """
     config = subgroup_report["config"]
     overall = subgroup_report["overall"]
 
     lines: list[str] = []
-    lines.append(f"# \U0001F6A8 {SYNTHETIC_WATERMARK} \U0001F6A8")
-    lines.append("")
-    lines.append(
-        "> **Every number in this document was computed against "
-        "`data/synthetic_rsna_generator.py`'s randomly generated output, not real chest X-rays or real "
-        "patients.** No metric below reflects real clinical performance. This document exists to prove "
-        "the Model Card *generator* is correct and produces the right shape of report -- see "
-        "Strategic_Startup_Roadmap.pdf, Phase 1 -- not to make a clinical claim. Replace the inputs with "
-        "a real locked split, real model predictions, and a real fitted temperature before this document "
-        "means anything."
-    )
+    if synthetic:
+        lines.append(f"# \U0001F6A8 {SYNTHETIC_WATERMARK} \U0001F6A8")
+        lines.append("")
+        lines.append(
+            "> **Every number in this document was computed against "
+            "`data/synthetic_rsna_generator.py`'s randomly generated output, not real chest X-rays or real "
+            "patients.** No metric below reflects real clinical performance. This document exists to prove "
+            "the Model Card *generator* is correct and produces the right shape of report -- see "
+            "Strategic_Startup_Roadmap.pdf, Phase 1 -- not to make a clinical claim. Replace the inputs with "
+            "a real locked split, real model predictions, and a real fitted temperature before this document "
+            "means anything."
+        )
+    else:
+        lines.append("# Model Card — Chest Radiograph Decision Support")
+        lines.append("")
+        lines.append(
+            "> Computed against the **real RSNA Pneumonia Detection Challenge** dataset, via the locked "
+            "70/15/15 patient-level split in `data/splits/split.lock.json`. These are measured results on a "
+            "held-out test set that was never trained or tuned on. They remain a *research* evaluation on a "
+            "single public competition cohort -- not a prospective clinical validation, and not evidence of "
+            "performance on any other population, scanner, or care setting. The intended-use restrictions in "
+            "`docs/regulatory/intended_use.md` continue to apply."
+        )
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -201,7 +224,13 @@ def generate_model_card(
     lines.append("")
 
     lines.append("---")
-    lines.append(f"**{SYNTHETIC_WATERMARK}** — see the notice at the top of this document.")
+    if synthetic:
+        lines.append(f"**{SYNTHETIC_WATERMARK}** — see the notice at the top of this document.")
+    else:
+        lines.append(
+            "Research evaluation on the real RSNA challenge cohort — see the notice at the top of "
+            "this document for what it does and does not establish."
+        )
     lines.append("")
 
     text = "\n".join(lines)
