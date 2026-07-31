@@ -74,14 +74,20 @@ def get_llm(agent_name: AgentName, **overrides) -> ChatOllama:
     temperature = getattr(settings, temperature_field)
 
     logger.info(
-        "get_llm(%r): model=%r temperature=%.2f%s",
-        agent_name, model_name, temperature,
+        "get_llm(%r): model=%r temperature=%.2f base_url=%r%s",
+        agent_name, model_name, temperature, settings.ollama_base_url,
         f" overrides={overrides}" if overrides else "",
     )
 
+    # base_url is passed explicitly rather than left to ChatOllama's
+    # own default. Without it, OLLAMA_BASE_URL in .env was inert: every
+    # agent silently talked to localhost regardless of what the operator
+    # configured -- the kind of misconfiguration that looks like it
+    # worked right up until inference is meant to land on another host.
     return ChatOllama(
         model=model_name,
         temperature=temperature,
+        base_url=settings.ollama_base_url,
         num_predict=settings.llm_max_new_tokens,
         **overrides,
     )
