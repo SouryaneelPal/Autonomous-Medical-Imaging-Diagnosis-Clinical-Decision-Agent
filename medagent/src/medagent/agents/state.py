@@ -75,15 +75,29 @@ class AgentState(TypedDict):
     # verifier_agent drop it straight into their prompts as-is.
     retrieved_evidence: Optional[str]
 
-    verification_status: Optional[Literal["pending", "consistent", "flagged"]]
+    verification_status: Optional[Literal["pending", "passed", "flagged"]]
     verification_notes: Optional[str]
     regeneration_count: int
+    # Set by verifier_agent when a case must go straight to a human
+    # rather than back through the regeneration loop -- today that means
+    # low vision-model confidence, where rewriting the report cannot
+    # change what the vision model already scored. Distinct from
+    # `flagged`: every escalation is flagged, but not every flag is an
+    # escalation. See route_after_verification in orchestrator.py.
+    verification_escalated: Optional[bool]
 
     # ── Reporting & Human-in-the-Loop (PRD 2.2, 1.) ──────────────────
     draft_report: Optional[str]
     human_decision: Optional[Literal["approved", "revised", "rejected"]]
     human_feedback: Optional[str]
     final_report: Optional[str]
+    # user_id of the authenticated reviewer who acted at human_review
+    # (security/auth.py). Recorded on state so finalize_report_node and
+    # archive_case_node can attribute their audit events to a person
+    # rather than to "the system" -- deliberately just the id, never the
+    # role or any other identity detail, since state is checkpointed to
+    # disk and this is the minimum needed for attribution.
+    reviewed_by: Optional[str]
 
     # ── Control / observability ─────────────────────────────────────
     # operator.add reducer: every node appends rather than overwrites,
@@ -112,9 +126,11 @@ def new_case_state(
         verification_status="pending",
         verification_notes=None,
         regeneration_count=0,
+        verification_escalated=False,
         draft_report=None,
         human_decision=None,
         human_feedback=None,
         final_report=None,
+        reviewed_by=None,
         errors=[],
     )

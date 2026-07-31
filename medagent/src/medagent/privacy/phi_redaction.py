@@ -1,105 +1,132 @@
 """
-PHI-adjacent audit logging and redaction for the clinical decision
-pipeline (PRD 2.3 "Data Privacy").
+Free-text PHI redaction for the clinical decision pipeline -- Phase 2,
+item 1 (Strategic_Startup_Roadmap.pdf: "Replace regex PHI redaction with
+a proper de-identifier").
 
-Called from orchestrator.py's finalize_report_node and archive_case_node
-to record every human decision (approve/revise/reject) to an
-append-only local audit log, with any free-text reviewer feedback
-scrubbed of common PHI patterns before it's written to disk.
+redact_phi() runs Microsoft Presidio (spaCy-backed NER + Presidio's
+built-in pattern recognizers for SSNs, phone numbers, etc., plus a
+custom recognizer for medical record numbers) instead of a fixed regex
+list -- catching names, dates, phone numbers, and institution/location
+mentions a regex pattern can't generalize to, at the cost of a heavier
+one-time model load per process (spaCy's en_core_web_lg, cached after
+first use via _get_analyzer()).
+
+Called by security/audit_logger.py to scrub the one free-text field
+(`notes`) an audit record can carry before it is written to disk. This
+module used to own audit-log writing itself; Phase 2 item 3 replaced
+that with the hash-chained logger, leaving this module responsible for
+exactly one thing: turning text that may contain PHI into text that
+does not.
 """
 from __future__ import annotations
 
-import json
 import logging
-import re
-from datetime import datetime, timezone
-from pathlib import Path
+from functools import lru_cache
+
+from presidio_analyzer import Pattern, PatternRecognizer
 
 logger = logging.getLogger("medagent.privacy")
 
-AUDIT_LOG_PATH = Path("data/audit_log.jsonl")
+# Entities Presidio's own default config disables (see its
+# conf/default.yaml: `labels_to_ignore: [ORGANIZATION, ...]`, commented
+# "Has many false positives") that this project deliberately
+# re-enables: over-redacting a stray word in a clinician's free-text
+# feedback is free; under-redacting a real hospital/institution name is
+# not -- recall over precision, the same priority this project's
+# diagnosis logic already follows (see diagnosis_agent.py).
+_ENABLED_ENTITIES = ["PERSON", "LOCATION", "DATE_TIME", "NRP", "ORGANIZATION"]
 
-# (label, compiled pattern). More specific patterns are listed first;
-# none of these currently overlap in a way that ordering would change
-# the result, but keep specific-before-general if you add more.
-_PHI_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
-    # SSN: 123-45-6789 or 123.45.6789 (not bare 9-digit runs -- too many
-    # false positives against MRNs, phone numbers, and other IDs).
-    ("SSN", re.compile(r"\b\d{3}[-.]\d{2}[-.]\d{4}\b")),
-    # Mock MRN: "MRN" followed by 6-10 digits, e.g. "MRN-1029384" or "MRN 102938471".
-    # Real MRN formats vary by institution; adjust this pattern to match yours.
-    ("MRN", re.compile(r"\bMRN[-:\s]*\d{6,10}\b", re.IGNORECASE)),
-    # US-style phone numbers: (123) 456-7890, 123-456-7890, 123.456.7890,
-    # +1 123 456 7890.
-    ("PHONE", re.compile(r"(?<!\d)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")),
-    # Dates: MM/DD/YYYY, MM-DD-YYYY, YYYY-MM-DD. Catches DOB-shaped values
-    # along with any other date in the same format -- regex alone can't
-    # tell "date of birth" from "date of imaging" by context, so this is
-    # deliberately broad rather than falsely precise.
-    ("DATE", re.compile(r"\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b")),
-]
+# Presidio's built-in recognizers cover SSNs, phone numbers, emails,
+# driver's licenses, etc. but have no "medical record number" concept --
+# MRNs are institution-specific free-text IDs, so a custom pattern
+# recognizer (Presidio's own extension mechanism for exactly this) fills
+# the gap rather than bolting on a second, separate regex pass outside
+# Presidio's pipeline.
+_MRN_RECOGNIZER = PatternRecognizer(
+    supported_entity="MEDICAL_RECORD_NUMBER",
+    patterns=[Pattern(name="mrn_pattern", regex=r"\bMRN[-:\s]*\d{6,10}\b", score=0.85)],
+)
+
+
+@lru_cache(maxsize=1)
+def _get_analyzer():
+    """
+    Builds (once per process -- this loads a full spaCy NER model,
+    expensive enough to cache) the Presidio analyzer with ORGANIZATION
+    detection re-enabled and the custom MRN recognizer added.
+    """
+    from presidio_analyzer import AnalyzerEngine
+    from presidio_analyzer.nlp_engine import NlpEngineProvider
+    from presidio_analyzer.predefined_recognizers import SpacyRecognizer
+
+    nlp_configuration = {
+        "nlp_engine_name": "spacy",
+        "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}],
+        "ner_model_configuration": {
+            "model_to_presidio_entity_mapping": {
+                "PER": "PERSON", "PERSON": "PERSON", "NORP": "NRP",
+                "FAC": "LOCATION", "LOC": "LOCATION", "GPE": "LOCATION", "LOCATION": "LOCATION",
+                "ORG": "ORGANIZATION", "ORGANIZATION": "ORGANIZATION",
+                "DATE": "DATE_TIME", "TIME": "DATE_TIME",
+            },
+            "low_confidence_score_multiplier": 0.4,
+            "low_score_entity_names": [],
+            # Deliberately does NOT include ORGANIZATION here, unlike
+            # Presidio's own default.yaml -- see module docstring.
+            "labels_to_ignore": [
+                "CARDINAL", "EVENT", "LANGUAGE", "LAW", "MONEY",
+                "ORDINAL", "PERCENT", "PRODUCT", "QUANTITY", "WORK_OF_ART",
+            ],
+        },
+    }
+    engine = NlpEngineProvider(nlp_configuration=nlp_configuration).create_engine()
+
+    analyzer = AnalyzerEngine(nlp_engine=engine)
+    # The registry's default SpacyRecognizer is built with ORGANIZATION
+    # excluded regardless of the NLP engine config above -- replace it
+    # with one that actually uses the entities this project wants.
+    analyzer.registry.remove_recognizer("SpacyRecognizer")
+    analyzer.registry.add_recognizer(SpacyRecognizer(supported_entities=_ENABLED_ENTITIES))
+    analyzer.registry.add_recognizer(_MRN_RECOGNIZER)
+    return analyzer
+
+
+@lru_cache(maxsize=1)
+def _get_anonymizer():
+    from presidio_anonymizer import AnonymizerEngine
+
+    return AnonymizerEngine()
 
 
 def redact_phi(text: str) -> str:
     """
-    Strips common PHI-shaped substrings (SSNs, phone numbers,
-    date-of-birth-shaped dates, mock MRNs) from free text, replacing
-    each match with a labeled placeholder like "[REDACTED-SSN]".
+    Detects and masks PII/PHI in free text using Presidio (spaCy-backed
+    NER + pattern recognizers for SSNs/phone numbers/MRNs/etc.),
+    replacing each detected span with a `<ENTITY_TYPE>` placeholder.
 
-    This is a lightweight regex pass, not a clinical-grade
-    de-identification tool: it will miss PHI that doesn't match these
-    shapes (names, addresses, unusual local ID formats) and can
-    occasionally over-redact look-alike numbers. Treat it as a floor,
-    not a guarantee -- swap in a proper NLP-based de-identifier (e.g.
-    Presidio) before this handles real patient data at scale.
+    This is a general-purpose NLP de-identifier, not a guarantee: it can
+    still miss PHI in unusual shapes it's never seen (a misspelled name,
+    a non-US ID format) and can over-redact look-alike text. Treat it as
+    a strong floor, not a certainty -- exactly like the regex version
+    this replaces, just with real language understanding behind it
+    instead of fixed patterns.
     """
     if not text:
         return text
 
-    redacted = text
-    for label, pattern in _PHI_PATTERNS:
-        redacted = pattern.sub(f"[REDACTED-{label}]", redacted)
-    return redacted
+    analyzer = _get_analyzer()
+    anonymizer = _get_anonymizer()
+
+    results = analyzer.analyze(text=text, language="en")
+    anonymized = anonymizer.anonymize(text=text, analyzer_results=results)
+    return anonymized.text
 
 
-def write_audit_entry(
-    case_id: str,
-    event: str,
-    decision: str | None = None,
-    reviewer_feedback: str | None = None,
-) -> None:
-    """
-    Appends one JSON line to the local append-only audit log recording a
-    clinical decision event.
-
-    NOTE ON THIS SIGNATURE: orchestrator.py's finalize_report_node and
-    archive_case_node call this exact shape --
-        write_audit_entry(case_id=..., event=..., decision=..., reviewer_feedback=...)
-    -- today. `reviewer_feedback` is the one free-text field a clinician
-    could type PHI into, so it's the only field passed through
-    redact_phi() before being written.
-
-    Never raises: an audit-logging failure (disk full, permission
-    error) must not be allowed to crash the graph after a clinician has
-    already made a real decision. Failures are logged loudly instead of
-    propagating.
-    """
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "case_id": case_id,
-        "event": event,
-        "decision": decision,
-        "reviewer_feedback": redact_phi(reviewer_feedback) if reviewer_feedback else reviewer_feedback,
-    }
-
-    try:
-        AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with AUDIT_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-        logger.info("Audit entry written for case=%s event=%s", case_id, event)
-    except OSError:
-        logger.exception(
-            "Failed to write audit entry for case=%s event=%s -- continuing without "
-            "blocking the graph, but this entry is LOST and needs manual follow-up.",
-            case_id, event,
-        )
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    sample = (
+        "Patient John Smith, DOB 04/12/1985, MRN 1029384, phone 555-123-4567, "
+        "seen at Mercy General Hospital in Springfield on 2026-07-29."
+    )
+    print("input:    ", sample)
+    print("redacted: ", redact_phi(sample))

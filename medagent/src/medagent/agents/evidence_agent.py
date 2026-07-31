@@ -13,6 +13,7 @@ import logging
 
 from medagent.agents.state import AgentState
 from medagent.rag.retriever import get_retriever
+from medagent.security.artifact_signing import SecurityError
 
 logger = logging.getLogger("medagent.agents.evidence")
 
@@ -22,6 +23,20 @@ TOP_K = 3
 def evidence_agent_node(state: AgentState) -> dict:
     """
     LangGraph node: Evidence Agent.
+
+    Every failure here degrades gracefully to a "no evidence" / errors-
+    list result EXCEPT SecurityError (security/artifact_signing.py,
+    Phase 2 item 2): that means the on-disk FAISS index is unsigned,
+    unverifiable, or has been tampered with, and get_retriever() ->
+    get_vectorstore() deliberately raises instead of falling back to a
+    safe sample index for exactly that reason -- see
+    rag/vectorstore.py's get_vectorstore() docstring. Swallowing it here
+    would silently turn a detected tampering event into an ordinary
+    "no evidence found" case that still sails through to human_review,
+    which defeats the entire point of signing the index in the first
+    place. It is re-raised instead, propagating out of graph.invoke()
+    to halt the case completely -- the same hard-gate pattern
+    deidentify_node uses for PHIDeidentificationError.
     """
     case_id = state.get("case_id", "unknown")
 
@@ -33,7 +48,7 @@ def evidence_agent_node(state: AgentState) -> dict:
             raise ValueError("diagnosis_findings.finding_label is missing or empty")
 
         retriever = get_retriever()
-        
+
         # FIXED: LangChain uses .invoke() to search the vector database
         hits = retriever.invoke(finding_label)[:TOP_K]
 
@@ -52,7 +67,14 @@ def evidence_agent_node(state: AgentState) -> dict:
         )
         return {"retrieved_evidence": formatted}
 
-    except Exception as exc:  # noqa: BLE001 - never let retrieval failure crash the graph
+    except SecurityError:
+        logger.error(
+            "evidence_agent_node HALTING case=%s -- FAISS index signature verification "
+            "failed. This is treated as a security incident, not a retrieval failure.",
+            case_id,
+        )
+        raise
+    except Exception as exc:  # noqa: BLE001 - never let an ordinary retrieval failure crash the graph
         logger.exception("evidence_agent_node failed for case=%s", case_id)
         return {"errors": [f"evidence_agent_node: {type(exc).__name__}: {exc}"]}
 

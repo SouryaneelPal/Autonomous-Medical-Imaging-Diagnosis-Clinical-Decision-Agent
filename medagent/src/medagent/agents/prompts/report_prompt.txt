@@ -9,7 +9,11 @@ AI DIAGNOSIS FINDINGS:
 RETRIEVED CLINICAL EVIDENCE (ATS/IDSA guideline excerpts; cite by source name, do not fabricate citations not present here):
 {retrieved_evidence}
 
+VERIFIER CORRECTION NOTES:
+{correction_notes}
+
 Rules:
+- If the correction notes above list specific issues, this is a REWRITE: a previous draft was rejected by automated verification. Fix every issue listed, exactly as described, and do not reintroduce it. Those notes are binding, not advisory.
 - Base the report strictly on the information provided above. Do not invent findings, patient history, or citations not present in the supplied data.
 - If the retrieved evidence is empty or indicates no evidence was found, state that explicitly rather than citing a guideline anyway.
 - Write for a clinician audience: concise, objective, standard radiology reporting conventions.

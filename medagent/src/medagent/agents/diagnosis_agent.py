@@ -24,6 +24,7 @@ from langchain_core.runnables import Runnable
 from pydantic import BaseModel, Field
 
 from medagent.agents.state import AgentState
+from medagent.llm.loader import get_llm
 from medagent.utils.settings import get_settings
 
 logger = logging.getLogger("medagent.agents.diagnosis")
@@ -124,20 +125,23 @@ _DIAGNOSIS_PROMPT = ChatPromptTemplate.from_messages(
 
 def _build_chat_model() -> BaseChatModel:
     """
-    Local, offline chat-model factory (TRD 3.2: Llama 3.1 8B or Qwen2.5
-    7B/14B, 4-bit quantized). Backend is selected via `LLM_BACKEND` in
-    `.env` so this is a config change, not a code change:
+    Local, offline chat-model factory. Backend is selected via
+    `LLM_BACKEND` in `.env` so this is a config change, not a code change:
 
-      - "ollama" (default): a local Ollama server serving an
-        already-quantized GGUF build, e.g. `ollama pull llama3.1:8b` or
-        `ollama pull qwen2.5:14b`. Ollama's native tool-calling support
-        is what makes `.with_structured_output()` reliable without a
-        hosted API.
+      - "ollama" (default): a local Ollama server. Model name and
+        temperature come from llm/loader.py::get_llm("diagnosis_agent")
+        (settings.diagnosis_llm_model / diagnosis_llm_temperature) rather
+        than a literal here -- swapping the model is a settings/.env
+        change, not an edit to this file. Ollama's native tool-calling
+        support is what makes `.with_structured_output()` reliable
+        without a hosted API.
       - "hf_endpoint": a self-hosted HuggingFace Text Generation
         Inference (TGI) endpoint serving a bitsandbytes 4-bit model,
         wrapped as a LangChain chat model. Prefer this if the LLM needs
         to share a process/GPU allocation with the vision models rather
-        than run as a separate Ollama daemon.
+        than run as a separate Ollama daemon. Unrelated to
+        llm/loader.py, which only owns the Ollama branch's model
+        selection -- this branch is diagnosis_agent-specific.
     """
     settings = get_settings()
     backend = getattr(settings, "llm_backend", "ollama")
@@ -154,13 +158,7 @@ def _build_chat_model() -> BaseChatModel:
 
     # Default: local Ollama server. Fully offline once the model is pulled
     # (PRD 2.3 Data Privacy -- no PHI-adjacent data leaves the process).
-    from langchain_ollama import ChatOllama
-
-    return ChatOllama(
-        model="llama3.1",
-        temperature=0.1,
-        num_predict=settings.llm_max_new_tokens,
-    )
+    return get_llm("diagnosis_agent")
 
 @lru_cache(maxsize=1)
 def _get_diagnosis_chain() -> Runnable:

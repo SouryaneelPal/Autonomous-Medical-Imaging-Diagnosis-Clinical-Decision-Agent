@@ -89,27 +89,45 @@ def _load_raster(path: Path) -> np.ndarray:
         return np.array(img, dtype=np.float32)
 
 
-def _load_dicom(path: Path) -> np.ndarray:
+def read_dicom_dataset(path: Path) -> "pydicom.Dataset":
     """
-    Loads a DICOM file via pydicom, applies VOI LUT windowing (uses the
-    file's own WindowCenter/WindowWidth when present, otherwise falls
-    back to a linear rescale), and inverts MONOCHROME1 images so higher
-    pixel values consistently mean denser tissue across the whole
-    pipeline regardless of source photometric interpretation.
+    Reads a DICOM file into a pydicom Dataset without extracting pixels
+    -- split out from _load_dicom() so privacy/dicom_scrubbing.py can
+    scrub a dataset's metadata tags independently of pixel extraction,
+    without duplicating the VOI-LUT/MONOCHROME1 logic below.
     """
     if not _PYDICOM_AVAILABLE:
         raise ValueError(
             f"Cannot load DICOM file {path}: pydicom is not installed. "
             f"Install it with `pip install pydicom` to enable DICOM support."
         )
+    return pydicom.dcmread(str(path))
 
-    dcm = pydicom.dcmread(str(path))
+
+def extract_dicom_pixels(dcm: "pydicom.Dataset") -> np.ndarray:
+    """
+    Applies VOI LUT windowing (uses the file's own WindowCenter/WindowWidth
+    when present, otherwise falls back to a linear rescale) and inverts
+    MONOCHROME1 images so higher pixel values consistently mean denser
+    tissue across the whole pipeline regardless of source photometric
+    interpretation. Takes an already-read Dataset (see
+    read_dicom_dataset()) rather than a path, so metadata scrubbing can
+    happen on the same in-memory dataset before pixels are touched.
+    """
     array = apply_voi_lut(dcm.pixel_array, dcm).astype(np.float32)
 
     if getattr(dcm, "PhotometricInterpretation", "") == "MONOCHROME1":
         array = array.max() - array
 
     return array
+
+
+def _load_dicom(path: Path) -> np.ndarray:
+    """Loads a DICOM file via pydicom and returns its windowed pixel array.
+    See read_dicom_dataset() / extract_dicom_pixels() for the two steps
+    this composes."""
+    dcm = read_dicom_dataset(path)
+    return extract_dicom_pixels(dcm)
 
 
 def to_grayscale(image: np.ndarray) -> np.ndarray:

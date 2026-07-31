@@ -13,10 +13,9 @@ import logging
 import json
 from pathlib import Path
 
-from langchain_ollama import ChatOllama
-
 from medagent.agents.state import AgentState
-from medagent.utils.settings import get_settings
+from medagent.llm.loader import get_llm
+from medagent.security.audit_logger import get_audit_logger
 
 logger = logging.getLogger("medagent.agents.report")
 
@@ -53,7 +52,6 @@ def report_agent_node(state: AgentState) -> dict:
     case_id = state.get("case_id", "unknown")
 
     try:
-        settings = get_settings()
         findings = state.get("diagnosis_findings") or {}
 
         correction_notes = (
@@ -83,14 +81,21 @@ def report_agent_node(state: AgentState) -> dict:
             case_id=case_id
         )
 
-        llm = ChatOllama(
-            model="llama3.1",  # <-- We are forcing it to use this exact name!
-            temperature=0.2,  
-            num_predict=settings.llm_max_new_tokens,
-        )
-
+        llm = get_llm("report_agent")
         response = llm.invoke(prompt)
         draft_report = response.content.strip()
+
+        # Audited per draft, not per case: verifier_agent can loop a case
+        # back here (up to MAX_REGENERATIONS), and each regenerated draft
+        # is its own reportable event -- an auditor reconstructing what a
+        # clinician actually saw needs to know a report was redrafted.
+        # The report TEXT is deliberately not logged, only that a draft
+        # of a given length happened; see audit_logger.py's PHI policy.
+        get_audit_logger().append_event(
+            case_id=case_id,
+            event_type="ai_report_drafted",
+            notes=f"draft_chars={len(draft_report)} regeneration_count={state.get('regeneration_count', 0)}",
+        )
 
         logger.info("Case %s: report_agent drafted %d chars", case_id, len(draft_report))
         return {"draft_report": draft_report}
