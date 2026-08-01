@@ -35,7 +35,8 @@ def test_report_prompt_consumes_the_verifier_correction_notes():
 
 
 @pytest.mark.parametrize(
-    "placeholder", ["{patient_metadata}", "{diagnosis_findings}", "{retrieved_evidence}"]
+    "placeholder",
+    ["{patient_metadata}", "{diagnosis_findings}", "{retrieved_evidence}", "{prior_studies}"]
 )
 def test_report_prompt_consumes_its_other_required_inputs(placeholder):
     assert placeholder in _read("report_prompt.txt")
@@ -50,6 +51,7 @@ def test_report_prompt_formats_with_exactly_what_report_agent_supplies():
         "finding_label": "x", "anatomical_region": "x", "severity": "high",
         "clinical_reasoning": "x", "detections": "x", "retrieved_evidence": "x",
         "patient_metadata": "x", "correction_notes": "x", "diagnosis_findings": "x",
+        "prior_studies": "x",
         "case_id": "x",
     }
     _read("report_prompt.txt").format(**supplied)  # must not raise

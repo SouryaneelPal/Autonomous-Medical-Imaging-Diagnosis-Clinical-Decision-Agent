@@ -25,7 +25,7 @@ from pathlib import Path
 import torch
 
 from medagent.agents.state import BoundingBox, ClassificationResult, PatientMetadata
-from medagent.evaluation.calibration import TemperatureScaler
+from medagent.evaluation.calibration import DEFAULT_TEMPERATURE_PATH, TemperatureScaler
 from medagent.utils.settings import get_settings
 from medagent.vision.gradcam import compute_alignment_score, generate_gradcam_heatmap
 from medagent.vision.models.backbone import normalize_for_backbone
@@ -85,6 +85,7 @@ def _undetermined_result() -> dict:
         "detections": [],
         "gradcam_heatmap_path": None,
         "heatmap_bbox_alignment_score": None,
+        "model_provenance": model_provenance(),
     }
 
 
@@ -111,6 +112,40 @@ def _run_detection(model, rgb_tensor: torch.Tensor, device: str) -> list[Boundin
             }
         )
     return detections
+
+
+def model_provenance() -> dict:
+    """
+    Which trained artifacts are actually backing this run.
+
+    The console reports confidences to four significant figures and draws
+    boxes on a radiograph; both look equally authoritative whether or not
+    a fine-tuned checkpoint exists behind them. Today the detector head is
+    randomly initialized (no checkpoint), so its boxes are noise -- and
+    nothing in the payload said so, which is what made "cluttered boxes"
+    read as an NMS problem rather than an untrained-model problem.
+
+    Derived from the filesystem on every call rather than cached: these
+    files appear when training lands, and a cached "missing" would
+    outlive the fix. Cheap enough (three stat calls) to not warrant a
+    cache next to model inference.
+    """
+    settings = get_settings()
+    detector_trained = Path(settings.detector_checkpoint_path).is_file()
+    classifier_finetuned = Path(settings.classifier_checkpoint_path).is_file()
+    temperature_fitted = Path(DEFAULT_TEMPERATURE_PATH).is_file()
+
+    return {
+        "detector_checkpoint_loaded": detector_trained,
+        "classifier_checkpoint_loaded": classifier_finetuned,
+        "temperature_fitted": temperature_fitted,
+        # Confidence is only meaningfully calibrated once a temperature
+        # has been fitted. Reported separately from the raw flags so the
+        # UI does not have to re-derive the rule.
+        "confidence_calibrated": temperature_fitted,
+        # The one the console needs most: whether to trust the overlay.
+        "detections_clinically_meaningful": detector_trained,
+    }
 
 
 def run_perception(image_path: str, metadata: PatientMetadata | None = None) -> dict:
@@ -162,8 +197,18 @@ def run_perception(image_path: str, metadata: PatientMetadata | None = None) -> 
             gradcam_heatmap_path, grayscale_cam = generate_gradcam_heatmap(
                 classifier, gray_tensor, target_index, case_id=case_id, device=device,
             )
-            if classification["predicted_class"] == "Normal":
-                heatmap_bbox_alignment_score = 0.0
+            # None, not 0.0, when there is nothing to align against.
+            # compute_alignment_score() already documents its 0.0 as
+            # meaning "not applicable", but a float cannot carry that
+            # distinction any further: once it reaches the console, a
+            # vacuous 0.0 and a genuinely measured zero overlap render
+            # as the same "0%", which reads as "the model looked in
+            # entirely the wrong place" -- an alarming claim to make
+            # about a case where no measurement was possible at all.
+            # None survives serialization as JSON null and lets the UI
+            # say N/A. The calculation itself is unchanged.
+            if classification["predicted_class"] == "Normal" or not detections:
+                heatmap_bbox_alignment_score = None
             else:
                 heatmap_bbox_alignment_score = compute_alignment_score(grayscale_cam, detections)
         else:
@@ -174,6 +219,7 @@ def run_perception(image_path: str, metadata: PatientMetadata | None = None) -> 
             "detections": detections,
             "gradcam_heatmap_path": gradcam_heatmap_path,
             "heatmap_bbox_alignment_score": heatmap_bbox_alignment_score,
+            "model_provenance": model_provenance(),
         }
 
     except Exception as exc:  # noqa: BLE001 - perception must never crash the graph; see module docstring

@@ -156,6 +156,18 @@ class Settings(BaseSettings):
     huggingface_hub_token: str = ""      # consumed by: huggingface_hub
     deepeval_api_key: str = ""           # consumed by: deepeval (optional cloud sync)
 
+    # --- MCP / PACS bridge (Phase 3 item 1) ---
+    # The NitroStack MCP server is a separate Node process this agent
+    # speaks to over STDIO (integration/mcp_client.py). Paths are
+    # relative to the repo root unless absolute.
+    mcp_server_dir: str = "mcp_server"
+    mcp_server_command: str = "node"
+    mcp_server_entrypoint: str = "dist/index.js"
+    # Startup + per-call ceiling. A PACS that never answers must not hang
+    # a clinical case indefinitely -- the client fails and the caller
+    # degrades, matching how every other retrieval path here behaves.
+    mcp_timeout_seconds: int = 30
+
     # --- Experiment tracking ---
     # mlflow reads MLFLOW_TRACKING_URI from os.environ itself; declared
     # here for the same reporting reason as the credentials above.
