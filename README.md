@@ -11,6 +11,34 @@
 
 ---
 
+## 🚀 Running This Project (TL;DR)
+
+For anyone who clones this repo and just wants it running:
+
+```bash
+git clone https://github.com/SouryaneelPal/Autonomous-Medical-Imaging-Diagnosis-Clinical-Decision-Agent.git
+cd Autonomous-Medical-Imaging-Diagnosis-Clinical-Decision-Agent/medagent
+
+python3.11 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e . -r requirements.txt
+python3 -m spacy download en_core_web_lg
+
+cp .env.example .env        # then set FAISS_SIGNING_KEY and confirm OLLAMA_* values
+
+ollama pull llama3.1:8b     # requires Ollama installed: https://ollama.com
+
+python -m medagent.scripts.ingest_guidelines
+./scripts/build_faiss_index.sh
+
+uvicorn medagent.api.server:app --reload
+```
+
+Then open **http://127.0.0.1:8000** — FastAPI serves the console directly, no separate frontend process needed.
+
+This is the minimum path to a running instance. PACS/MCP integration and real RSNA dataset ingestion are optional and covered in full, with prerequisites and explanations, in the [Quick Start](#quick-start) section below.
+
+---
+
 ## ⚠️ Development & Validation Status
 
 **Read this before anything else in this document.**
@@ -27,6 +55,7 @@ Nothing below should be read as a clinical performance claim. It describes what 
 
 ## 📋 Table of Contents
 
+- [Running This Project (TL;DR)](#-running-this-project-tldr)
 - [Overview](#overview)
 - [Architecture](#architecture)
 - [Agent Pipeline](#agent-pipeline)
@@ -236,6 +265,8 @@ A fixable defect routes back to the Report Agent (bounded at 3 total attempts); 
 ---
 
 ## Quick Start
+
+> Just want the run commands? See [Running This Project (TL;DR)](#-running-this-project-tldr) above. The steps below cover the same ground with full explanations, plus the optional PACS/MCP and real-dataset steps.
 
 ### Prerequisites
 
@@ -452,12 +483,6 @@ medagent/
 ├── requirements.txt
 └── pyproject.toml
 ```
-
----
-
-## License
-
-No `LICENSE` file is currently present in this repository. Until one is added, default copyright applies and no reuse rights are granted beyond what the repository host's own terms provide — add an explicit license before external contribution or reuse.
 
 ---
 
