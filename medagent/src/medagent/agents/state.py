@@ -59,7 +59,16 @@ class AgentState(TypedDict):
     classification: Optional[ClassificationResult]
     detections: Optional[list[BoundingBox]]
     gradcam_heatmap_path: Optional[str]
-    heatmap_bbox_alignment_score: Optional[float]  # explainability alignment, PRD 2.3
+    # None means "not applicable" -- no detections to align against, or a
+    # "Normal" read. Distinct from a measured 0.0, which would mean the
+    # heatmap and the boxes genuinely do not overlap.
+    heatmap_bbox_alignment_score: Optional[float]
+
+    # Which trained artifacts backed this run (vision/inference.py's
+    # model_provenance()). Lets the console say when boxes come from an
+    # untrained detector head or confidence is uncalibrated, instead of
+    # rendering both as if they were clinically meaningful.
+    model_provenance: Optional[dict]  # explainability alignment, PRD 2.3
 
     # ── Agentic Intelligence Layer ───────────────────────────────────
     # diagnosis_agent's structured finding. Note there is no separate
@@ -74,6 +83,18 @@ class AgentState(TypedDict):
     # (top-3 guideline chunks), not a list -- report_agent and
     # verifier_agent drop it straight into their prompts as-is.
     retrieved_evidence: Optional[str]
+
+    # Prior imaging for this patient, from the PACS bridge over MCP
+    # (integration/mcp_client.py, Phase 3). A list of DICOM study
+    # metadata dicts; empty means "none on file", which is a different
+    # clinical fact from None ("PACS was never queried / unreachable").
+    # Both render as an empty panel, but only one of them is an outage,
+    # so the distinction is kept rather than collapsed to [].
+    #
+    # While the PACS is the simulated fixture server, each study carries
+    # simulated=True and the UI badges it -- prior history shown beside a
+    # real radiograph must never be mistaken for the genuine record.
+    prior_studies: Optional[list[dict]]
 
     verification_status: Optional[Literal["pending", "passed", "flagged"]]
     verification_notes: Optional[str]
@@ -121,8 +142,11 @@ def new_case_state(
         detections=None,
         gradcam_heatmap_path=None,
         heatmap_bbox_alignment_score=None,
+        model_provenance=None,
         diagnosis_findings=None,
         retrieved_evidence=None,
+        # None, not [] -- the PACS has not been queried yet at this point.
+        prior_studies=None,
         verification_status="pending",
         verification_notes=None,
         regeneration_count=0,

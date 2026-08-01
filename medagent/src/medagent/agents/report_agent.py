@@ -34,6 +34,7 @@ ANATOMICAL REGION: {anatomical_region}
 SEVERITY: {severity}
 REASONING: {clinical_reasoning}
 RETRIEVED EVIDENCE: {retrieved_evidence}
+PRIOR IMAGING: {prior_studies}
 CORRECTION NOTES: {correction_notes}
 
 Report Draft:"""
@@ -67,8 +68,36 @@ def report_agent_node(state: AgentState) -> dict:
             logger.warning("report_prompt.txt not found. Using fallback prompt.")
             prompt_template = _FALLBACK_PROMPT
 
+        # Prior imaging from the PACS bridge (Phase 3 item 2). Rendered as
+        # compact lines rather than raw JSON so the model reads it as
+        # history. The SIMULATED marker is carried through verbatim: a
+        # model drafting comparative language ("unchanged from the prior
+        # study") off fabricated priors would put that claim in front of a
+        # clinician, so the prompt states plainly what the priors are.
+        prior_studies = state.get("prior_studies")
+        if prior_studies:
+            lines = "\n".join(
+                f"- {study.get('studyDate', 'unknown date')} "
+                f"{study.get('modality', '?')}/{study.get('viewPosition', '?')}: "
+                f"{study.get('reportImpression', 'no impression recorded')}"
+                for study in prior_studies
+            )
+            if any(study.get("simulated") for study in prior_studies):
+                prior_studies_text = (
+                    "*** SIMULATED PRIOR STUDIES -- stand-in records from a test PACS, NOT this "
+                    "patient's real history. Do not state or imply comparison against a real prior "
+                    "study in the report. ***\n" + lines
+                )
+            else:
+                prior_studies_text = lines
+        elif prior_studies is None:
+            prior_studies_text = "Prior imaging unavailable (PACS not reachable)."
+        else:
+            prior_studies_text = "No prior studies on file for this patient."
+
         # We pass EVERYTHING the text file might ask for to avoid KeyErrors
         prompt = prompt_template.format(
+            prior_studies=prior_studies_text,
             finding_label=findings.get("finding_label", "Undetermined"),
             anatomical_region=findings.get("anatomical_region", "unknown"),
             severity=findings.get("severity", "high"),

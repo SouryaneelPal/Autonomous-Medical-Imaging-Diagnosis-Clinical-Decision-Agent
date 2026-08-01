@@ -64,6 +64,11 @@ class CaseResponse(BaseModel):
     detections: list[dict] = Field(default_factory=list)
     diagnosis_findings: Optional[dict] = None
     retrieved_evidence: Optional[str] = None
+    # Prior imaging from the PACS bridge (Phase 3 item 2). None means the
+    # PACS was never queried or was unreachable; [] means it answered
+    # "none on file". The console renders both as an empty panel but says
+    # which, and badges any study carrying simulated=True.
+    prior_studies: Optional[list[dict]] = None
     draft_report: Optional[str] = None
     final_report: Optional[str] = None
     verification_status: Optional[str] = None
@@ -72,7 +77,13 @@ class CaseResponse(BaseModel):
     regeneration_count: int = 0
     human_decision: Optional[str] = None
     reviewed_by: Optional[str] = None
+    # null = not applicable (no detections, or a Normal read), NOT a
+    # measured zero. The console renders null as "N/A".
     heatmap_bbox_alignment_score: Optional[float] = None
+    # Trained-artifact provenance, so the UI can flag an untrained
+    # detector or uncalibrated confidence rather than implying both are
+    # clinically meaningful.
+    model_provenance: Optional[dict] = None
     # Asset availability, so the UI knows which image tabs to offer
     # rather than probing for 404s.
     has_deidentified_image: bool = False

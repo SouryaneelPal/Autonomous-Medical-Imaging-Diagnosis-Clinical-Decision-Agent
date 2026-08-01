@@ -29,3 +29,6 @@ checkpoints.db-wal
 __pycache__/
 *.pyc
 .venv/
+
+# macOS Finder metadata
+.DS_Store

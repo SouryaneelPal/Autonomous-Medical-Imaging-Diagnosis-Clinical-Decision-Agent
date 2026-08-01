@@ -14,7 +14,11 @@ Pipeline (TRD 3.1):
       -> diagnosis_agent        (Agentic Intelligence Layer -> diagnosis_findings)
       -> evidence_agent          (Knowledge Layer / RAG over ATS-IDSA guidelines
                                    -> a single formatted retrieved_evidence string)
-      -> report_agent             (drafts structured clinical report)
+      -> pacs_retrieval           (Interoperability Layer, Phase 3 item 2: prior imaging
+                                    for this patient via the NitroStack MCP bridge.
+                                    Async; degrades to prior_studies=None if the PACS is
+                                    unreachable -- supplementary context, never a halt.)
+      -> report_agent             (drafts structured clinical report, with priors in view)
       -> verifier_agent            (Verification Layer, hardened in Phase 2 item 4 into
                                     a deterministic firewall: low-confidence abstention,
                                     then pure-Python schema/consistency/citation-grounding
@@ -51,10 +55,12 @@ Run this module directly for a smoke test:  `python -m medagent.agents.orchestra
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 from typing import Literal
 
+from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -153,6 +159,7 @@ def perceive_image_node(state: AgentState) -> dict:
             "detections": result["detections"],
             "gradcam_heatmap_path": result["gradcam_heatmap_path"],
             "heatmap_bbox_alignment_score": result["heatmap_bbox_alignment_score"],
+            "model_provenance": result.get("model_provenance"),
         }
     except Exception as exc:  # noqa: BLE001 - surface into graph state, don't crash the run
         logger.exception("perceive_image_node failed for case=%s", state["case_id"])
@@ -198,6 +205,91 @@ def _authorize_review(decision: object, case_id: str) -> UserContext:
         raise
 
     return user
+
+
+async def pacs_retrieval_node(state: AgentState) -> dict:
+    """
+    Fetches this patient's prior imaging from the PACS bridge over MCP
+    (Phase 3 item 2), so report_agent can draft with knowledge of what
+    came before rather than reading every study as if it were the first.
+
+    Genuinely async: the MCP client spawns and talks to a Node child
+    process. LangGraph's sync `invoke()` cannot drive a bare `async def`,
+    so build_graph() registers this alongside a thin sync bridge -- see
+    _PACS_NODE below.
+
+    Degrades, never halts. Prior imaging is supplementary context, so an
+    unreachable or unbuilt PACS leaves `prior_studies` as None and the
+    case proceeds exactly as it did before this node existed. That is the
+    same fail-safe contract every node here follows except the two
+    deliberate hard gates (deidentify, and the FAISS signature check
+    inside evidence_agent), and it is why McpClientError is caught rather
+    than propagated.
+
+    None vs []: None means the PACS was never successfully queried; []
+    means it answered "no priors on file". Both leave the panel empty,
+    but only one is an outage.
+    """
+    from medagent.integration.mcp_client import McpClientError, query_prior_studies
+
+    case_id = state.get("case_id", "unknown")
+    patient_id = (state.get("patient_metadata") or {}).get("patient_id")
+
+    if not patient_id:
+        logger.warning("Case %s: no patient_id in metadata -- skipping PACS lookup", case_id)
+        return {"prior_studies": None}
+
+    try:
+        payload = await query_prior_studies(patient_id)
+    except McpClientError as exc:
+        # Not an error entry on state: a missing PACS is an infrastructure
+        # gap, not a defect in this case's analysis, and surfacing it in
+        # `errors` would make every case look degraded wherever the
+        # bridge simply is not deployed.
+        logger.warning("Case %s: PACS lookup unavailable for %s -- %s", case_id, patient_id, exc)
+        return {"prior_studies": None}
+    except Exception as exc:  # noqa: BLE001 - a supplementary lookup must never take down a case
+        logger.exception("Case %s: unexpected PACS failure for %s", case_id, patient_id)
+        return {"prior_studies": None}
+
+    studies = payload.get("studies") or []
+    logger.info(
+        "Case %s: PACS returned %d prior study/studies for %s (dataSource=%s)",
+        case_id, len(studies), patient_id, payload.get("dataSource"),
+    )
+    return {"prior_studies": studies}
+
+
+def _pacs_retrieval_sync(state: AgentState) -> dict:
+    """
+    Sync bridge for pacs_retrieval_node.
+
+    Everything upstream -- run_case(), resume_case(), and the FastAPI
+    handlers, which are deliberately sync so they run in the threadpool
+    rather than blocking the event loop -- drives the graph with
+    `invoke()`. LangGraph refuses to run a bare `async def` node under
+    `invoke()` ("No synchronous function provided"), so this wrapper
+    supplies the sync path while the async one above stays the real
+    implementation. Registering both (RunnableLambda(..., afunc=...))
+    means the graph works under `invoke()` today and `ainvoke()` later
+    with no further change.
+    """
+    try:
+        return asyncio.run(pacs_retrieval_node(state))
+    except RuntimeError as exc:
+        # Only reachable if a caller invokes the SYNC graph from inside a
+        # running loop; the correct fix there is ainvoke(), which uses
+        # the async implementation directly and never reaches this.
+        logger.warning(
+            "Case %s: PACS sync bridge cannot run inside an active event loop (%s) -- "
+            "use graph.ainvoke() from async callers. Continuing without priors.",
+            state.get("case_id", "unknown"), exc,
+        )
+        return {"prior_studies": None}
+
+
+# One node, two implementations: sync for invoke(), async for ainvoke().
+_PACS_NODE = RunnableLambda(_pacs_retrieval_sync, afunc=pacs_retrieval_node, name="pacs_retrieval")
 
 
 def human_review_node(state: AgentState) -> Command[Literal["finalize_report", "archive_case"]]:
@@ -363,6 +455,7 @@ def build_graph(checkpointer=None) -> CompiledStateGraph:
     builder.add_node("perceive_image", perceive_image_node)
     builder.add_node("diagnosis_agent", diagnosis_agent_node)
     builder.add_node("evidence_agent", evidence_agent_node)
+    builder.add_node("pacs_retrieval", _PACS_NODE)
     builder.add_node("report_agent", report_agent_node)
     builder.add_node("verifier_agent", verifier_agent_node)
     builder.add_node("human_review", human_review_node)
@@ -373,7 +466,9 @@ def build_graph(checkpointer=None) -> CompiledStateGraph:
     builder.add_edge("deidentify", "perceive_image")
     builder.add_edge("perceive_image", "diagnosis_agent")
     builder.add_edge("diagnosis_agent", "evidence_agent")
-    builder.add_edge("evidence_agent", "report_agent")
+    # PACS priors land before drafting so report_agent can reference them.
+    builder.add_edge("evidence_agent", "pacs_retrieval")
+    builder.add_edge("pacs_retrieval", "report_agent")
     builder.add_edge("report_agent", "verifier_agent")
     builder.add_conditional_edges(
         "verifier_agent",

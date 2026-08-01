@@ -14,6 +14,7 @@ Check specifically for:
 - Any statement in the draft that contradicts the diagnosis findings' severity or the retrieved evidence.
 - Any citation attributed to a source that does not appear in the retrieved evidence.
 - Any claim about patient history, labs, or prior imaging not present in the diagnosis findings or evidence.
+- EXTERNAL HARDWARE CONFOUND: chest radiographs frequently contain external hardware -- ECG leads and wires, pacemakers and defibrillators, central lines, surgical clips, telemetry buttons, and clothing artefact. These project as dense opacities and are a well-known source of false-positive opacity findings. If the draft asserts a focal opacity or similar dense finding, and that finding could plausibly be explained by overlying hardware, flag it so the clinician checks the image directly. Raise this as a caution to be verified, not as proof the finding is wrong -- an opacity may be both real and overlapped by a lead.
 
 Be strict: if you are unsure whether a claim is supported, treat it as unsupported and flag it. Do not give the draft the benefit of the doubt.
 
